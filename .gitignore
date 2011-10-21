@@ -1,0 +1,5 @@
+# Lines starting with '#' are considered comments.
+# Ignore Emacs backups
+*~
+# Ignore Allegro CL compiled files
+*.fasl
