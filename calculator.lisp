@@ -52,37 +52,56 @@
 
 (in-package :interview.calculator)
 
-;;; Tests
+;;; Testing framework
 
-(defvar +task-sample-cases+
-  '(("add(1, 2)" 3)
-    ("add(1, mult(2, 3))" 7)
-    ("mult(add(2, 2), div(9, 3))" 12)
-    ("let(a, 5, add(a, a))" 10)
-    ("let(a, 5, let(b, mult(a, 10), add(b, a)))" 55)
-    ("let(a, let(b, 10, add(b, b)), let(b, 20, add(a, b)))" 40))
-  "Sample cases of the task.")
+(defvar *tested-function* #'identity
+  "Variable for binding tested functions.")
 
-(defun check (case)
+(defun testing-function (&rest input)
+  "Proxy a call to the *tested-function*."
+  (apply *tested-function* input))
+
+(defun test-case (case)
   "Check one test case."
-  (destructuring-bind (in out) case
-    (= out (calculator in))))
+  (destructuring-bind (in => out) case
+    (equal out (testing-function in))))
 
-(defun test ()
-  "Test calculator implementation."
-  (format *trace-output* "~&Testing interview.calculator~%")
-  (trace calculator)
-  (trace check)
-  (if (notany #'null
-              (mapcar #'check
-                      +task-sample-cases+))
-      (format *trace-output* "~&Test OK.~%")
-      (format *trace-output* "~&Test FAILED.~%"))
-  (untrace check)
-  (untrace calculator))
+(trace testing-function
+       test-case)
 
-(eval-when (:load-toplevel)
-  (test))
+(defun test (function-name test-name test-cases)
+  "Test function across test-cases."
+  (let ((*tested-function* (symbol-function function-name)))
+    (format *trace-output* "~&Running ~a~%" test-name)
+    (if (notany #'null
+		(mapcar #'test-case test-cases))
+	(format *trace-output* "~&Test OK.~%")
+	(format *trace-output* "~&Test FAILED.~%"))))
+
+(defmacro make-test (for function-name acros test-cases &body test-cases)
+  "Create a lambda for testing function-name acros test-cases."
+  `(function (lambda ()
+      (test ',function-name
+	    (format nil "~a function test" ',function-name)
+	    ,@test-cases))))
+
+(funcall
+ (make-test for string acros test-cases
+   '((A => "A")
+     (Q => "Q"))))
+
+(defmacro define-test-cases (name documentation &body test-cases)
+  "Store test-cases in global variable with name."
+  `(defvar ,name ',test-cases ,documentation))
+
+(define-test-cases +task-sample-cases+
+    "Sample cases of the task."
+  ("add(1, 2)" => 3)
+  ("add(1, mult(2, 3))" => 7)
+  ("mult(add(2, 2), div(9, 3))" => 12)
+  ("let(a, 5, add(a, a))" => 10)
+  ("let(a, 5, let(b, mult(a, 10), add(b, a)))" => 55)
+  ("let(a, let(b, 10, add(b, b)), let(b, 20, add(a, b)))" => 40))
 
 ;;; Grammar definition
 
@@ -93,6 +112,17 @@
     (body        => exp)
     (func-name   => add-func sub-func mult-func div-func))
   "Grammar for the evaluation of the calculator input.")
+
+(defvar +lexems+
+  '(" " "(" ")" ","
+    num var
+    add-func sub-func mult-func div-func
+    let-op)
+  "Lexems of the grammar.")
+
+(defvar +skipped-lexems+
+  '(" ")
+  "Lexems that must be skipped.")
 
 ;;; Grammar rules macros
 
@@ -122,9 +152,27 @@
 ;; Value checking lambda for the 'num' expression
 (define-type num
     :check-value-predicate
-  #'(lambda (value)
-      (when (numberp value)
-        (and (<= Integer.MIN_VALUE value Integer.MAX_VALUE)))))
+  #'check-integer)
+
+(defun check-integer (number-or-string)
+  "Return T if number-or-string is an integer in allowed
+   interval [Integer.MIN_VALUE, Integer.MAX_VALUE]."
+  (let* ((value number-or-string)
+	 (num
+	  (typecase value
+	    (number value)
+	    (string (parse-integer value :junk-allowed t))
+	    (t nil))))
+    (when num
+      (and (<= Integer.MIN_VALUE num Integer.MAX_VALUE)))))
+
+(funcall
+ (make-test for check-integer acros test-cases
+   `((1 => t)
+     (,(1- Integer.MIN_VALUE) => nil)
+     (,(1+ Integer.MAX_VALUE) => nil)
+     ("2" => t)
+     ("a" => nil))))
 
 ;(funcall (get 'num 'check-value) 14)
 
@@ -150,17 +198,17 @@
   "Variables store, implemented as alist.")
 
 (defun bind-variable (name value)
-  (push (cons name value) *variables-alist*)))
+  (push (cons name value) *variables-alist*))
 
 (defun unbind-variable (name)
   (setf *variables-alist*
         (remove name *variables-alist* :key #'first :test #'string= :count 1)))
 
 (defun set-variable (name value)
-  (rplacd (assoc name *variables-alist* :test #'string=) value)))
+  (rplacd (assoc name *variables-alist* :test #'string=) value))
 
 (defun get-variable (name)
-  (cdr (assoc name *variables-alist* :test #'string=))))
+  (cdr (assoc name *variables-alist* :test #'string=)))
 
 #|(let ((*variables-alist* ())
            (a))
@@ -194,6 +242,73 @@
 
 ;(get-rule-value (get-rule 'exp))
 
+(defun parse (input-string)
+  "Parse input-string using grammar rules. Return a tree.")
+
+(defun make-lexer (input-string)
+  "Return a closure function that will return succeeding lexems."
+  (let ((s (make-string-input-stream input-string)))
+    #'(lambda ()
+	(read-lexem s nil))))
+
+(defun read-lexem (&optional stream &rest read-char-args)
+					;(apply #'read-char stream read-char-args))
+  (loop for ch = (apply #'read-char stream read-char-args)
+     while ch
+     collect ch into lexem
+     while (lexemp (concatenate 'string lexem))
+     finally (return lexem)))
+
+(defun lexemp (lexem?)
+  "Return T if the string is a lexem."
+  (when (find-if #'(lambda (l)
+	       (cond ((stringp l) (string= l lexem?))
+		     ((symbolp l)
+		      (let ((check (get l 'check-value)))
+			(when check
+			  (funcall check lexem?))))
+		     (t nil)))
+	   +lexems+)
+    t))
+
+(funcall
+ (make-test for lexemp acros test-cases
+   `(("a" => t)
+     ("a b" => nil)
+     ("(" => t)
+     (" " => t)
+     (")" => t)
+     (,(format nil "~S" (1- Integer.MAX_VALUE)) => t)
+     (,(format nil "~S" (1+ Integer.MAX_VALUE)) => nil))))
+
+(with-input-from-string (s "abcd")
+  (read-lexem s nil))
+
+(defvar x (make-lexer "abcd"))
+(funcall x)
+
+(defun string-to-lexems (string)
+  "Convert string to lexem list."
+  (do* ((lexer (make-lexer string))
+	(lexem t (funcall lexer))
+	(lexems nil (cons lexem lexems)))
+       ((not lexem) (nreverse (rest lexems)))))
+
+; Alternative implementation via LOOP macro
+(defun string-to-lexems (string)
+  "Convert string to lexem list."
+  (loop with lexer = (make-lexer string)
+     for lexem = (funcall lexer)
+     while lexem collect lexem))
+
+(string-to-lexems "abcd")
+
+(funcall
+ (make-test for parse acros test-cases
+   '(("1" => 1)
+     ("3" => 3)
+     ("add(1, 2)" => (add 1 2)))))
+
 ;;; Interface
 
 (defun calculator (input-string)
@@ -201,3 +316,11 @@
    See +grammar+ variable definition."
   (declare (type string input-string))
   (length input-string))
+
+;;; Autotests
+
+(eval-when (:load-toplevel)
+  (funcall
+   (make-test for calculator
+       acros test-cases
+     +task-sample-cases+)))
