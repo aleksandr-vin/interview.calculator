@@ -4,5 +4,6 @@
 ;;;;
 
 (defpackage :interview.calculator
-  (:use :common-lisp))
+  (:use :common-lisp)
+  (:export calculator parse))
 

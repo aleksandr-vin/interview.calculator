@@ -79,16 +79,16 @@
 	(format *trace-output* "~&Test OK.~%")
 	(format *trace-output* "~&Test FAILED.~%"))))
 
-(defmacro make-test (for function-name acros test-cases &body cases)
-  "Create a lambda for testing function-name acros test-cases."
-  (declare (ignore for acros test-cases))
+(defmacro make-test (for function-name across test-cases &body cases)
+  "Create a lambda for testing function-name across test-cases."
+  (declare (ignore for across test-cases))
   `(function (lambda ()
       (test ',function-name
 	    (format nil "~a function test" ',function-name)
 	    ,@cases))))
 
 (funcall
- (make-test for string acros test-cases
+ (make-test for string across test-cases
    '((A => "A")
      (Q => "Q"))))
 
@@ -96,26 +96,16 @@
   "Store test-cases in global variable with name."
   `(defvar ,name ',test-cases ,documentation))
 
-(define-test-cases +task-sample-cases+
-    "Sample cases of the task."
-  ("add(1, 2)" => 3)
-  ("add(1, mult(2, 3))" => 7)
-  ("mult(add(2, 2), div(9, 3))" => 12)
-  ("let(a, 5, add(a, a))" => 10)
-  ("let(a, 5, let(b, mult(a, 10), add(b, a)))" => 55)
-  ("let(a, let(b, 10, add(b, b)), let(b, 20, add(a, b)))" => 40))
-
 ;;; Grammar definition
 
 (defvar +grammar+
   '((exp         => func let var num)
     (func        => (func-name "(" exp "," exp ")"))
-    (let         => (let-op "(" var "," exp "," body))
+    (let         => (let-op "(" var "," exp "," body ")"))
     (body        => exp)
     (func-name   => add-func sub-func mult-func div-func)
-    ;; let-op fake
-    (let-op      => "let-op"))
-  "Grammar for the evaluation of the calculator input.")
+    (let-op      => "let"))
+  "Calculator expression definition grammar.")
 
 (defvar +skipped-lexems+
   '(" ")
@@ -124,32 +114,32 @@
 ;;; Grammar rules macros
 
 (defmacro define-type (type-name &key check-value-predicate
-		       product-predicate)
+		       product-function)
   "Define grammar type with the predicate to check a value."
-  `(setf (get ',type-name 'check-value)
+  `(eval-when (:load-toplevel :execute)
+     (setf (get ',type-name 'check-value)
          ,check-value-predicate)
-
-  `(setf (get ',type-name 'product)
-	 ,product-predicate)
-
-  type-name)
+     (setf (get ',type-name 'product)
+	 ,product-function)
+     ,type-name))
 
 (defmacro define-func (func-name &key name evaluating-func)
-  `(progn
+  `(eval-when (:load-toplevel :execute)
      (setf (get ',func-name 'check-value)
            #'(lambda (value)
                (when (stringp value)
                  (string= ,name value))))
-
      (setf (get ',func-name 'product)
 	   #'(lambda (value)
 	       (declare (ignore value))
-	       ',func-name))
+	       (intern ',func-name :interview.calculator.funcs)))
+     (export (intern ',func-name :interview.calculator.funcs)
+	     :interview.calculator.funcs)
+     (setf (symbol-function (intern ',func-name :interview.calculator.funcs))
+	   ,evaluating-func)
+     ',func-name))
 
-     (setf (get ',func-name 'evaluating-func)
-           ,evaluating-func))
-
-  func-name)
+(defpackage :interview.calculator.funcs)
 
 ;;; Grammar rules definitions
 
@@ -183,72 +173,36 @@
 ;; Value checking lambda for the 'num' expression
 (define-type num
     :check-value-predicate #'check-integer
-    :product-predicate #'parse-integer)
+    :product-function #'parse-integer)
 
 (funcall
- (make-test for check-integer acros test-cases
+ (make-test for check-integer across test-cases
    `((1 => t)
      (,(1- Integer.MIN_VALUE) => nil)
      (,(1+ Integer.MAX_VALUE) => nil)
      ("2" => t)
      ("a" => nil))))
 
-;(funcall (get 'num 'check-value) 14)
+(defun check-var-name (string)
+  "Return T if string is a valid name for the calculator variable."
+  (when (stringp string)
+        (every #'(lambda (c)
+			 (or (char<= #\A c #\Z) (char<= #\a c #\z)))
+		     string)))
 
 ;; Package for interning variables of the expressions
 (defpackage :interview.calculator.vars)
 
 ;; Value checking lambda for the 'var' expression
 (define-type var
-    :check-value-predicate
-  #'(lambda (value)
-      (when (stringp value)
-        (every #'(lambda (c)
-			 (or (char<= #\A c #\Z) (char<= #\a c #\z)))
-		     value)))
-  :product-predicate #'(lambda (value)
+    :check-value-predicate #'check-var-name
+  :product-function #'(lambda (value)
 			 (intern value :interview.calculator.vars)))
-
-;(funcall (get 'var 'check-value) "abcS12")
 
 (define-func add-func  :name "add"  :evaluating-func #'(lambda (a b) (+ a b)))
 (define-func sub-func  :name "sub"  :evaluating-func #'(lambda (a b) (- a b)))
 (define-func mult-func :name "mult" :evaluating-func #'(lambda (a b) (* a b)))
 (define-func div-func  :name "div"  :evaluating-func #'(lambda (a b) (/ a b)))
-
-;(funcall (get 'add-func 'check-value) "add")
-
-(defvar *variables-alist* ()
-  "Variables store, implemented as alist.")
-
-(defun bind-variable (name value)
-  (push (cons name value) *variables-alist*))
-
-(defun unbind-variable (name)
-  (setf *variables-alist*
-        (remove name *variables-alist* :key #'first :test #'string= :count 1)))
-
-(defun set-variable (name value)
-  (rplacd (assoc name *variables-alist* :test #'string=) value))
-
-(defun get-variable (name)
-  (cdr (assoc name *variables-alist* :test #'string=)))
-
-#|(let ((*variables-alist* ())
-           (a))
-       (bind-variable "a" 12)
-       (bind-variable "b" 2)
-       (bind-variable "a" 4)
-       (bind-variable "b" 1)
-       (set-variable "a" 9)
-       (unbind-variable "b")
-       (unbind-variable "a")
-       (setf a (get-variable "a"))
-       *variables-alist*)|#
-
-;(define-op let-op :name "let" :evalua
-
-
 
 ;;; Grammar abstractions
 
@@ -303,7 +257,7 @@
      while (string< "" lexem) collect lexem))
 
 (funcall
- (make-test for string-to-lexems acros test-cases
+ (make-test for string-to-lexems across test-cases
    '(("1" => ("1"))
      ("1 2 3" => ("1" " " "2" " " "3"))
      ("1,2,3" => ("1" "," "2" "," "3"))
@@ -314,21 +268,40 @@
      ("ab(cd(ef)12,22" => ("ab" "(" "cd" "(" "ef" ")" "12" "," "22")))))
 
 (defun parse (input-string)
-  "Parse input-string using grammar rules. Return a tree."
+  "Parse first expression in input-string using grammar rules.
+   Return multiple value list:
+    - a first parsed expression as a tree
+    - the rest of the lexems as a string.
+   String of the rest of the lexems is concatenated from the lexems list
+   so it may not be equal to the tail of the input-string."
   (let* ((lexems (string-to-lexems input-string))
 	 (lexems (remove-if #'skipped-lexem-p lexems)))
-    (parse-with-rule 'exp lexems)))
+    (multiple-value-bind (p l) (parse-lexems lexems)
+      (let ((rest-lexems-string
+	     (if l
+		 (reduce #'(lambda (a b) (concatenate 'string a " " b)) l)
+		 "")))
+	(values p rest-lexems-string)))))
 
-(defun parse-with-rule (rule lexems)
-  (etypecase rule
-    (string (when (string= rule (first lexems))
-	      (values '(t) #|(list (first lexems))|# (rest lexems))))
-    (list (multiple-value-bind (p l) (parse-with-list-rule rule lexems)
+(defun parse-lexems (lexems)
+  (parse-with-rule 'exp lexems))
+
+(defun parse-with-rule (rule-name lexems)
+  "Parse first rule in lexems list according to the rule with rule-name.
+   Return multiple value list:
+    - a first parsed expression as a tree
+    - the rest of the lexems as a list."
+  (declare (type list lexems))
+  (etypecase rule-name
+    (string (when (string= rule-name (first lexems))
+	      (values (list (first lexems))
+		      (rest lexems))))
+    (list (multiple-value-bind (p l) (parse-with-list-rule rule-name lexems)
 	    (when p
 	      (values (list p) l))))
-    (symbol (let ((rv (get-rule-value (get-rule rule)))
-		  (cv (get rule 'check-value))
-		  (producer (get rule 'product))
+    (symbol (let ((rv (get-rule-value (get-rule rule-name)))
+		  (cv (get rule-name 'check-value))
+		  (producer (or (get rule-name 'product) #'identity))
 		  (lexem (first lexems)))
 	      (if (null rv)
 		  (if cv
@@ -336,22 +309,12 @@
 			(when cv-result
 			  (values (list (funcall producer lexem))
 				  (rest lexems))))
-		      (error "No check-value function for ~A rule" rule))
+		      (error "No check-value function for ~A rule-name"
+			     rule-name))
 		  (loop for v in rv
-		       do (multiple-value-bind (p l) (parse-with-rule v lexems)
-			    (when p
-			      (return (values p l))))))))))
-
-(defun parse-with-exp-rule (lexems)
-  "Parse lexems list with the 'exp rule.
-   See parse-with-rule function."
-  (parse-with-rule 'exp lexems))
-
-(funcall
- (make-test for parse-with-exp-rule acros test-cases
-   `((("a") => (,(intern "a" :interview.calculator.vars)))
-     (("1") => (1))
-     (("add" "(" "1" "," "2" ")") => ((add-func t 1 t 2 t))))))
+		     do (multiple-value-bind (p l) (parse-with-rule v lexems)
+			  (when p
+			    (return (values (funcall producer p) l))))))))))
 
 (defun parse-with-list-rule (list-rule lexems)
   (declare (type list list-rule))
@@ -365,30 +328,84 @@
 	      (when rest-p
 		(values (append hp rest-p) rest-l))))))))
 
-(parse "add(a, div(100,-10))")
+;; Test for parse without 'func and 'let producers.
+;; (identity function will be used in this case)
+(progn
+  (setf (get 'func 'product) nil)
+  (setf (get 'let  'product) nil)
+  (funcall
+   (make-test for parse across test-cases
+     `(("1" => (1))
+       ("3" => (3))
+       ("abc" => (,(intern "abc" :interview.calculator.vars)))
+       ("add(1, 2)" => ((,(intern 'add-func :interview.calculator.funcs)
+			   "(" 1 "," 2 ")")))
+       ("div( s ,  add(2,1))"
+	=> ((,(intern 'div-func :interview.calculator.funcs) "("
+	      ,(intern "s" :interview.calculator.vars) ","
+	      (,(intern 'add-func :interview.calculator.funcs)
+		"(" 2 "," 1 ")")
+	      ")")))))))
+
+;; Adding LISP form producers to the 'func and 'let rules
+
+(defun set-rule-product-function (rule-name product-function)
+  "Set PRODUCT-FUNCTION for the RULE-NAME rule."
+  (declare (type symbol rule-name))
+  (setf (get rule-name 'product) product-function))
+
+(defun produce-func-product (form)
+  "Return a LISP form which is a function call form."
+  (destructuring-bind ((name |(| exp-1 |,| exp-2 |)|)) form
+    (declare (ignore |(| |,| |)|))
+    (list (list name exp-1 exp-2))))
 
 (funcall
- (make-test for parse acros test-cases
+ (make-test for produce-func-product across test-cases
+   '((((add "(" 12 "," 100 ")")) => ((add 12 100))))))
+
+(set-rule-product-function 'func #'produce-func-product)
+
+(defun produce-let-product (form)
+  "Return a LISP form which is a ``let'' operator form."
+  (destructuring-bind ((name |(| var |,| exp-1 |,| exp-2 |)|)) form
+    (declare (ignore name |(| |,| |,| |)|))
+    (list (list 'let (list (list var exp-1))
+		exp-2))))
+
+(funcall
+ (make-test for produce-let-product across test-cases
+   '((((let "(" a "," 5 "," a ")")) => ((let ((a 5)) a))))))
+
+(set-rule-product-function 'let #'produce-let-product)
+
+;; Test for parse with LISP-form producers
+(funcall
+ (make-test for parse across test-cases
    `(("1" => (1))
      ("3" => (3))
      ("abc" => (,(intern "abc" :interview.calculator.vars)))
-     ("add(1, 2)" => ((add-func t 1 t 2 t)))
+     ("add(1, 2)" => ((,(intern 'add-func :interview.calculator.funcs) 1 2)))
      ("div( s ,  add(2,1))"
-      => ((div-func t ,(intern "s" :interview.calculator.vars)
-		   t (add-func t 2 t 1 t) t))))))
+      => ((,(intern 'div-func :interview.calculator.funcs)
+	    ,(intern "s" :interview.calculator.vars)
+	    (,(intern 'add-func :interview.calculator.funcs) 2 1)))))))
 
 ;;; Interface
 
 (defun calculator (input-string)
-  "Calculate an input-string. Evaluating it according to the special grammar.
-   See +grammar+ variable definition."
+  "Calculate an expression in the input-string.
+   Input is parsing according to the grammar
+   and then evaluated by the LISP evaluator.
+   Only one expression is allowed to be in the input-string."
   (declare (type string input-string))
-  (length input-string))
+  (eval (first (parse input-string))))
 
-;;; Autotests
-
-(eval-when (:load-toplevel)
-  (funcall
-   (make-test for calculator
-       acros test-cases
-     +task-sample-cases+)))
+(funcall
+ (make-test for calculator across test-cases
+   '(("add(1, 2)" => 3)
+     ("add(1, mult(2, 3))" => 7)
+     ("mult(add(2, 2), div(9, 3))" => 12)
+     ("let(a, 5, add(a, a))" => 10)
+     ("let(a, 5, let(b, mult(a, 10), add(b, a)))" => 55)
+     ("let(a, let(b, 10, add(b, b)), let(b, 20, add(a, b)))" => 40))))
