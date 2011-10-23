@@ -267,6 +267,13 @@
      ("  " => (" " " "))
      ("ab(cd(ef)12,22" => ("ab" "(" "cd" "(" "ef" ")" "12" "," "22")))))
 
+(define-condition calculator-parse-error (error)
+                  ((expression :initarg :expression
+                                 :reader calculator-parse-error-expression))
+  (:report (lambda (condition stream)
+             (format stream "Bad expression ~A"
+                     (calculator-parse-error-expression condition)))))
+
 (defun parse (input-string)
   "Parse first expression in input-string using grammar rules.
    Return multiple value list:
@@ -281,6 +288,8 @@
 	     (if l
 		 (reduce #'(lambda (a b) (concatenate 'string a " " b)) l)
 		 "")))
+	(unless p
+	  (error 'calculator-parse-error :expression input-string))
 	(values p rest-lexems-string)))))
 
 (defun parse-lexems (lexems)
@@ -391,15 +400,51 @@
 	    ,(intern "s" :interview.calculator.vars)
 	    (,(intern 'add-func :interview.calculator.funcs) 2 1)))))))
 
-;;; Interface
+(defun calculator-parse-eval (input-string)
+  "Evaluate an expression in the input-string.
+   Input is parsing according to the grammar
+   and then evaluated by the LISP evaluator.
+   Return multiple value list:
+    - expression evaluation result
+    - string of the rest of the lexems found in the input-string."
+  (declare (type string input-string))
+  (multiple-value-bind (p l) (parse input-string)
+    (when p
+      (values (eval (first p)) l))))
+
+(funcall
+ (make-test for calculator-parse-eval across test-cases
+   '(("add(1, 2)" => 3)
+     ("add(1, mult(2, 3))" => 7)
+     ("mult(add(2, 2), div(9, 3))" => 12)
+     ("let(a, 5, add(a, a))" => 10)
+     ("let(a, 5, let(b, mult(a, 10), add(b, a)))" => 55)
+     ("let(a, let(b, 10, add(b, b)), let(b, 20, add(a, b)))" => 40))))
+
+;;; User interface
 
 (defun calculator (input-string)
   "Calculate an expression in the input-string.
+   Return the result number or error message.
    Input is parsing according to the grammar
    and then evaluated by the LISP evaluator.
    Only one expression is allowed to be in the input-string."
-  (declare (type string input-string))
-  (eval (first (parse input-string))))
+  (if (string= "" input-string)
+      (format nil "UI error: input string is empty!")
+      (handler-case
+	  (multiple-value-bind (result rest)
+	      (calculator-parse-eval input-string)
+	    (cond ((and result (string= "" rest)) result)
+		  ((and result (not (string= "" rest)))
+		   (format nil "UI error: input string contains lexems after expression: ~A!"
+			   rest))
+		  (t
+		   (format nil "UI error: unknown error!"))))
+	(unbound-variable (v)
+	  (format nil "Evaluating error: variable not bound to value: ~A!"
+		  (cell-error-name v)))
+	(calculator-parse-error (e)
+	  (format nil "Parsing error: ~A!" e)))))
 
 (funcall
  (make-test for calculator across test-cases
@@ -408,4 +453,12 @@
      ("mult(add(2, 2), div(9, 3))" => 12)
      ("let(a, 5, add(a, a))" => 10)
      ("let(a, 5, let(b, mult(a, 10), add(b, a)))" => 55)
-     ("let(a, let(b, 10, add(b, b)), let(b, 20, add(a, b)))" => 40))))
+     ("let(a, let(b, 10, add(b, b)), let(b, 20, add(a, b)))" => 40)
+     ;; errors
+     ("" => "UI error: input string is empty!")
+     ("1 2"  => "UI error: input string contains lexems after expression: 2!")
+     ("1111" => "Parsing error: Bad expression 1111!")
+     ("a"    => "Evaluating error: variable not bound to value: a!")
+     ("foobar" => "Evaluating error: variable not bound to value: foobar!")
+     ("let(a, 1, add(a,b))"    => "Evaluating error: variable not bound to value: b!")
+     ("add(x,y)"    => "Evaluating error: variable not bound to value: x!"))))
